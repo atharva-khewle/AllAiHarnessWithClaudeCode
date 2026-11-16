@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const readline = require('readline');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { createTools } = require('./lib/tools');
 const { createChat } = require('./lib/chat');
 const { runClaude, openClaudeWindow } = require('./lib/claude');
@@ -69,6 +69,23 @@ async function main() {
   // Code window. With several servers running, it shows which windows belong together.
   const name = path.basename(tools.root);
   process.title = `AllAiHarness - ${name}`;
+
+  // The Commands window (lib/command-window.js): read only, it shows every command the brain runs
+  // and its output while it runs. Without it (not on Windows), the output goes to this window.
+  let commandsFile = null;
+  if (process.platform === 'win32') {
+    commandsFile = path.join(__dirname, 'jobs', `commands-${process.pid}.log`);
+    fs.mkdirSync(path.dirname(commandsFile), { recursive: true });
+    fs.writeFileSync(commandsFile, `\x1b[36m=== AllAiHarness | ${name} | commands the brain runs, with their output as it comes. Read only. ===\x1b[0m\n`);
+    const title = `Commands - ${name.replace(/[^\w .-]/g, '_')}`;
+    spawn('cmd.exe', ['/d', '/s', '/c', `"start "${title}" "${process.execPath}" "${path.join(__dirname, 'lib', 'command-window.js')}" "${commandsFile}" ${process.pid}"`], {
+      stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
+    }).on('error', () => {});
+  }
+  const commandOut = (text) => {
+    if (!commandsFile) return process.stdout.write(`\x1b[90m${text.replace(/^(?=.)/gm, '    | ')}\x1b[0m`);
+    try { fs.appendFileSync(commandsFile, text); } catch { /* the jobs folder was removed */ }
+  };
   const chat = createChat(cfg, `AllAiHarness: ${name}`);
   const state = loadState();
   // The chats this server changed. Only they are saved, on top of what is on disk, so a second
@@ -200,8 +217,14 @@ async function main() {
         case 'search': return { ok: true, text: tools.search(action) };
         case 'write': return { ok: true, text: tools.write(action) };
         case 'edit': return { ok: true, text: tools.edit(action) };
-        // The output shows here line by line while the command runs, not only at its end.
-        case 'run': return await tools.run(action, (piece) => process.stdout.write(`\x1b[90m${piece.replace(/^(?=.)/gm, '    | ')}\x1b[0m`));
+        case 'run': {
+          // The command and its output go to the Commands window as they come, not at the end.
+          commandOut(`\n\x1b[36m[${new Date().toLocaleTimeString()}] ${tools.root}>\x1b[0m ${action.cmd}\n`);
+          const began = Date.now();
+          const r = await tools.run(action, commandOut);
+          commandOut(`\x1b[${r.ok ? '32' : '31'}m[${r.text.split('\n')[0]}, ${Math.round((Date.now() - began) / 1000)}s]\x1b[0m\n`);
+          return r;
+        }
         case 'claude': {
           if (!claude) throw new Error('Claude Code is not installed on this machine; do the work with write, edit and run');
           if (typeof action.task !== 'string' || !action.task.trim()) throw new Error('"task" is missing');
@@ -315,8 +338,8 @@ async function main() {
   if (claude) console.log(`Claude Code model: ${workerModel}`);
   if (claude && openClaudeWindow({ workspace: tools.root, cfg: cfg.claude })) {
     console.log(`Claude Code window: "Claude Code - ${name}". Jobs the brain hands to Claude Code run there.`);
-    console.log('  Commands the brain runs itself show in this window, with their output as it comes.');
   }
+  if (commandsFile) console.log(`Commands window: "Commands - ${name}". Every command the brain runs, with its output as it comes.`);
 
   let link = opts.chat === null ? await ask('Continue an old chat? Paste its link and press Enter. For a new chat just press Enter: ') : opts.chat;
   if (link && !(link.startsWith(cfg.url) && link.length > cfg.url.length)) {

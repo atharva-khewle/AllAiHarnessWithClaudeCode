@@ -7,18 +7,19 @@ Gives the DeepSeek web chat hands in a project folder: it can read, search, writ
 1. Copy this folder into the project folder you want to work on.
 2. Double-click `start.bat` (or run `node server.js`). Keep the window open.
 3. It asks which model Claude Code should use (haiku, sonnet or opus; Enter keeps haiku), then whether to continue an old chat. Paste the chat's link and press Enter, or just press Enter for a new chat.
-4. Two windows open: a Chrome window on DeepSeek and a "Claude Code - <workspace>" window with Claude Code ready in it. The first time, log in there. The server sends the setup message; DeepSeek answers "Ready." An old chat that this copy already set up continues without a new setup message.
+4. Windows open: Chrome on DeepSeek, "Commands - <workspace>" and "Claude Code - <workspace>" with Claude Code ready in it. The first time, log in there. The server sends the setup message; DeepSeek answers "Ready." An old chat that this copy already set up continues without a new setup message.
 5. Chat with DeepSeek. Everything else happens by itself. The Chrome window may be covered or minimized while it works.
 
-## The three windows
+## The windows
 
-- **Server window** (the one `start.bat` opened): every action DeepSeek takes. Commands it runs itself (`run`) are printed in full, with their output line by line as it comes, then `ok` or the error and the time taken. Most work happens here: DeepSeek does small steps itself and does not use Claude Code for them.
+- **Server window** (the one `start.bat` opened): every action DeepSeek takes, one line each, with `ok` or the error.
+- **Commands window**: read only. Every command DeepSeek runs itself (`run`), with the folder, the time, its output line by line as it comes, and the exit code. Most work happens here: DeepSeek does small steps itself and does not use Claude Code for them.
 - **Claude Code window**: the real Claude Code screen. Idle until DeepSeek hands it a job with the `claude` action; each job starts a fresh Claude Code there. You see its every step and can type into it.
 - **Chrome window**: the chat. A tag in the bottom right corner names the workspace; a bar at the top shows Claude Code jobs and problems.
 
 ## Several sessions at once
 
-Put a copy of this folder in each project and run each `start.bat`. Each server gets its own Chrome window, its own chat and its own Claude Code window, all named after its workspace. A server only ever touches the chat it opened, and only runs agent blocks of chats set up for its own workspace, so sessions never run each other's work. Closing a server closes its Claude Code window. All share one Chrome and one DeepSeek login.
+Put a copy of this folder in each project and run each `start.bat`. Each server gets its own Chrome window, its own chat and its own Claude Code window, all named after its workspace. A server only ever touches the chat it opened, and only runs agent blocks of chats set up for its own workspace, so sessions never run each other's work. Closing a server closes its Commands and Claude Code windows. All share one Chrome and one DeepSeek login.
 
 The workspace is the folder this folder sits in. Needs Node.js 22 or newer and Chrome; nothing to install.
 
