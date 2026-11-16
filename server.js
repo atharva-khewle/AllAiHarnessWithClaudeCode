@@ -10,9 +10,9 @@ const { execFileSync } = require('child_process');
 const { createTools } = require('./lib/tools');
 const { createChat } = require('./lib/chat');
 const { runClaude } = require('./lib/claude');
-const { REQUEST_MARKER, render, findBlocks, fillContents, formatResults } = require('./lib/protocol');
+const { REQUEST_MARKER, render, findBlocks, fillContents, formatResults, splitText } = require('./lib/protocol');
 
-const USAGE = 'usage: node server.js [--chat <link> | --new] [--workspace <dir>] [--manual] [--config <file>]';
+const USAGE = 'usage: node server.js [--chat <link> | --new] [--model <name>] [--workspace <dir>] [--manual] [--config <file>]';
 const STATE_FILE = path.join(__dirname, '.state.json');
 const LOG_FILE = path.join(__dirname, 'log.md');
 
@@ -20,9 +20,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const say = (text) => console.log(`[${new Date().toLocaleTimeString()}] ${text}`);
 
 function parseArgs(argv) {
-  const opts = { workspace: path.resolve(__dirname, '..'), config: path.join(__dirname, 'config.json'), manual: false, chat: null };
+  const opts = { workspace: path.resolve(__dirname, '..'), config: path.join(__dirname, 'config.json'), manual: false, chat: null, model: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--workspace') opts.workspace = argv[++i];
+    else if (argv[i] === '--model') opts.model = argv[++i];
     else if (argv[i] === '--config') opts.config = argv[++i];
     else if (argv[i] === '--manual') opts.manual = true;
     else if (argv[i] === '--chat') opts.chat = argv[++i];
@@ -32,12 +33,12 @@ function parseArgs(argv) {
   return opts;
 }
 
-// Asks which chat to work in. Enter, or no terminal to ask on, means a new chat.
-function askChat() {
+// Asks a question on the terminal. Enter, or no terminal to ask on, gives an empty answer.
+function ask(question) {
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     let answered = false;
-    rl.question('Continue an old chat? Paste its link and press Enter. For a new chat just press Enter: ', (answer) => {
+    rl.question(question, (answer) => {
       answered = true;
       rl.close();
       resolve(answer.trim());
@@ -69,13 +70,83 @@ async function main() {
   const saveState = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state));
   const log = (title, body) => fs.appendFileSync(LOG_FILE, `## ${new Date().toISOString()} ${title}\n\n${body}\n\n`);
 
+  // The message last sent, until the brain starts answering it. A rate-limit notice or an answer
+  // that never starts means the message is sent again after a wait.
+  let waiting = null;
+  let gaveUp = false;
+  let lastContinue = 0;
+
+  async function sendNow(text) {
+    await chat.fill(text);
+    await chat.send();
+  }
+
+  // Clicks "Continue" when the page offers it for an answer that was cut off as too long.
+  async function autoContinue(st) {
+    if (!st.cont || Date.now() - lastContinue < 3000) return;
+    lastContinue = Date.now();
+    if (await chat.clickContinue()) say('answer was cut off as too long; clicked Continue');
+  }
+
+  async function watchSent(st) {
+    if (!waiting) return;
+    if (st.size !== waiting.size) { waiting.size = st.size; waiting.changedAt = Date.now(); }
+    // The answer has started once the newest message is a reply and the messages differ from
+    // before the send.
+    if (st.replied && st.sig !== waiting.sig) { waiting = null; return; }
+    if (!st.limited && Date.now() - waiting.changedAt < cfg.idleSec * 1000) return;
+    if (++waiting.tries > cfg.maxResends) {
+      const msg = `No answer from the chat after ${cfg.maxResends} tries. Check the chat window.`;
+      say(msg);
+      await chat.banner(msg);
+      waiting = null;
+      gaveUp = true;
+      return;
+    }
+    say(`${st.limited ? 'rate limit notice' : `no answer for ${cfg.idleSec}s`}; sending the message again in ${cfg.retryWaitSec}s (try ${waiting.tries} of ${cfg.maxResends})`);
+    await sleep(cfg.retryWaitSec * 1000);
+    await sendNow(waiting.text);
+    const after = await chat.state();
+    waiting.size = after.size;
+    waiting.changedAt = Date.now();
+  }
+
+  // Blocks until the brain has answered and the answer has stopped growing.
+  async function untilAnswered() {
+    let last = -1, same = 0;
+    gaveUp = false;
+    for (let i = 0; i < 900 && !gaveUp; i++) {
+      const st = await chat.state();
+      await autoContinue(st);
+      await watchSent(st);
+      if (!waiting) {
+        same = st.size === last ? same + 1 : 0;
+        last = st.size;
+        if (same >= 5) return;
+      }
+      await sleep(cfg.pollMs);
+    }
+  }
+
   // Delivers a message to the brain. Normally it is sent at once and whatever the user was
-  // typing is put back. With --manual it is left in the message box for the user to send.
+  // typing is put back. With --manual it is left in the message box for the user to send. A
+  // message over the size limit goes out in parts; each part but the last waits for the answer.
   async function deliver(text) {
     const draft = (await chat.inputText()).split(REQUEST_MARKER).pop().trim();
     if (opts.manual) return chat.fill(draft ? `${text}\n\n${draft}` : text);
-    await chat.fill(text);
-    await chat.send();
+    const parts = splitText(text, cfg.maxMessageChars);
+    for (let i = 0; i < parts.length; i++) {
+      const last = i === parts.length - 1;
+      const body = parts.length === 1 ? parts[0]
+        : `[part ${i + 1} of ${parts.length}${last ? '; the message is complete, go on' : '; more parts follow. Answer only "ok", with no agent block'}]\n${parts[i]}`;
+      const before = await chat.state();
+      waiting = { text: body, sig: before.sig, size: before.size, changedAt: Date.now(), tries: 0 };
+      await sendNow(body);
+      if (!last) {
+        say(`sent part ${i + 1} of ${parts.length}; waiting for the brain before the next`);
+        await untilAnswered();
+      }
+    }
     if (draft) await chat.fill(draft);
   }
 
@@ -115,7 +186,14 @@ async function main() {
         case 'claude': {
           if (!claude) throw new Error('Claude Code is not installed on this machine; do the work with write, edit and run');
           if (typeof action.task !== 'string' || !action.task.trim()) throw new Error('"task" is missing');
-          return await runClaude(action.task, { workspace: tools.root, cfg: cfg.claude });
+          await chat.banner(`Claude Code (${workerModel}) is working on a job...`, '#1d4ed8');
+          const r = await runClaude(action.task, { workspace: tools.root, cfg: cfg.claude });
+          if (r.problem) {
+            say(`!!! CLAUDE CODE PROBLEM: ${r.problem}`);
+            await chat.banner(`CLAUDE CODE PROBLEM: ${r.problem}`);
+            r.text = `CLAUDE CODE PROBLEM: ${r.problem}\nTell the user about this problem first, in your text.\n\n${r.text}`;
+          } else await chat.banner('');
+          return r;
         }
         default: throw new Error(`unknown tool "${action.tool}"; use list, read, search, write, edit, run or claude`);
       }
@@ -134,7 +212,7 @@ async function main() {
     const results = [];
     let failed = false;
     for (const action of actions) {
-      const label = String(action.path || action.pattern || action.cmd || action.task || '').replace(/\s+/g, ' ').slice(0, 70);
+      const label = String(action.path || (action.paths || []).join(' ') || action.pattern || action.cmd || action.task || '').replace(/\s+/g, ' ').slice(0, 70);
       if (failed) {
         results.push({ action, status: 'skipped', text: '' });
         console.log(`  ${action.id} ${action.tool} ${label} ... skipped`);
@@ -159,6 +237,9 @@ async function main() {
   let wasNewChat = false;
   let pending = { digest: null, polls: 0 };
   async function tick() {
+    const st = await chat.state();
+    await autoContinue(st);
+    await watchSent(st);
     const isNewChat = await chat.atNewChat();
     if (isNewChat && !wasNewChat) await sendSetup();
     wasNewChat = isNewChat;
@@ -184,7 +265,18 @@ async function main() {
   console.log(`mode: ${opts.manual ? 'manual (messages wait in the message box)' : 'auto (messages are sent for you)'}`);
   console.log(`Claude Code: ${claude ? `found (${claude}); the server starts it when the brain asks for it` : 'not found; the brain works without it'}`);
 
-  let link = opts.chat === null ? await askChat() : opts.chat;
+  // The model Claude Code works with: haiku, sonnet, opus or a full model name.
+  const modelAt = cfg.claude.args.indexOf('--model');
+  let workerModel = opts.model || (claude && opts.chat === null
+    ? await ask(`Claude Code model (haiku, sonnet, opus) [${cfg.claude.args[modelAt + 1] || 'default'}]: `) : '');
+  if (/\s/.test(workerModel)) workerModel = '';
+  if (workerModel) {
+    if (modelAt >= 0) cfg.claude.args[modelAt + 1] = workerModel; else cfg.claude.args.push('--model', workerModel);
+  }
+  workerModel = cfg.claude.args[cfg.claude.args.indexOf('--model') + 1] || 'default';
+  if (claude) console.log(`Claude Code model: ${workerModel}`);
+
+  let link = opts.chat === null ? await ask('Continue an old chat? Paste its link and press Enter. For a new chat just press Enter: ') : opts.chat;
   if (link && !(link.startsWith(cfg.url) && link.length > cfg.url.length)) {
     console.log(`That is not a chat link (it must start with ${cfg.url}). Starting a new chat.`);
     link = '';

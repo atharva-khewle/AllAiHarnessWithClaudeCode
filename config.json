@@ -3,11 +3,23 @@
   "chromePath": "",
   "debugPort": 9333,
   "profileDir": "",
-  "selectors": { "input": "textarea", "send": "", "reply": ".ds-markdown" },
+  "selectors": {
+    "input": "textarea",
+    "send": "",
+    "message": ".ds-message",
+    "reply": ".ds-markdown"
+  },
+  "page": {
+    "limit": "too frequent|try again later|rate limit|请稍后|过于频繁",
+    "continue": "^\\s*(continue( generating)?|继续生成)\\s*$"
+  },
   "pollMs": 1000,
+  "idleSec": 120,
+  "retryWaitSec": 45,
+  "maxResends": 5,
   "maxActionsPerBlock": 8,
-  "maxResultChars": 12000,
-  "maxMessageChars": 40000,
+  "maxResultChars": 150000,
+  "maxMessageChars": 80000,
   "run": {
     "timeoutSec": 120,
     "maxTimeoutSec": 600,
@@ -23,12 +35,16 @@
   "claude": {
     "cmd": "claude",
     "args": [
-      "--model", "haiku",
-      "--permission-mode", "auto",
-      "--tools", "Bash,Edit,Read,Write,Glob,Grep",
+      "--model",
+      "haiku",
+      "--permission-mode",
+      "auto",
+      "--tools",
+      "Bash,Edit,Read,Write,Glob,Grep",
       "--strict-mcp-config",
       "--disable-slash-commands",
-      "--setting-sources", "project",
+      "--setting-sources",
+      "project",
       "--no-session-persistence"
     ],
     "timeoutSec": 900
