@@ -47,7 +47,8 @@
       "project",
       "--no-session-persistence"
     ],
-    "timeoutSec": 900
+    "timeoutSec": 900,
+    "keepOpenSec": 30
   },
   "deny": []
 }

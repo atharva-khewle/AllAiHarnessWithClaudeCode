@@ -186,8 +186,21 @@ async function main() {
         case 'claude': {
           if (!claude) throw new Error('Claude Code is not installed on this machine; do the work with write, edit and run');
           if (typeof action.task !== 'string' || !action.task.trim()) throw new Error('"task" is missing');
-          await chat.banner(`Claude Code (${workerModel}) is working on a job...`, '#1d4ed8');
-          const r = await runClaude(action.task, { workspace: tools.root, cfg: cfg.claude });
+          await chat.banner(`Claude Code (${workerModel}) is starting in its own window...`, '#1d4ed8');
+          let lastSaid = 0;
+          const r = await runClaude(action.task, {
+            workspace: tools.root,
+            cfg: cfg.claude,
+            model: workerModel,
+            title: action.task.replace(/\s+/g, ' ').slice(0, 60),
+            // Shown on the chat page and, once a minute, in this window, so a long job never
+            // looks like a hang.
+            onStatus: ({ step, steps, secs }) => {
+              const time = `${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, '0')}s`;
+              chat.banner(`Claude Code (${workerModel}) running ${time}, ${steps} steps. Now: ${step}`, '#1d4ed8');
+              if (secs - lastSaid >= 60) { lastSaid = secs; say(`Claude Code still running (${time}, ${steps} steps; now: ${step.slice(0, 80)})`); }
+            },
+          });
           if (r.problem) {
             say(`!!! CLAUDE CODE PROBLEM: ${r.problem}`);
             await chat.banner(`CLAUDE CODE PROBLEM: ${r.problem}`);
