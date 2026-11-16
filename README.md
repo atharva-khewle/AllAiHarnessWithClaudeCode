@@ -18,7 +18,7 @@ Options: `--chat <link>` or `--new` to skip the chat question, `--model <name>` 
 
 There is nothing to set up or connect. When DeepSeek uses the `claude` action, the server starts Claude Code by itself (`claude -p` in the workspace), waits for it to finish and sends its report to DeepSeek.
 
-Each job opens its own window titled `Claude Code (<model>) RUNNING`. The window shows the task and every step and error as it happens, with the time. It prints a line each minute while nothing new happens. At the end the title changes to DONE or FAILED. A finished window closes after `claude.keepOpenSec` seconds; a failed one stays open for an hour. Closing the window stops the job, and DeepSeek is told. The time limit is `claude.timeoutSec`. While the job runs, a blue bar on the chat page shows the time, the step count and the current step. It uses the Claude Code that is installed and logged in on this machine; the server prints at start whether it found it. Without Claude Code everything else still works.
+Each job opens the real Claude Code screen in a window of its own, so you see every step, error and permission question, and can type into it. The task is in `jobs/<id>/task.md`; Claude Code writes its report to `jobs/<id>/report.md`, and the server sends that to DeepSeek. The window stays open afterwards; close it when you are done looking. Closing it before the report stops the job, and DeepSeek is told. The time limit is `claude.timeoutSec`. While the job runs, a blue bar on the chat page shows how long it has been running. With `"window": false` under `claude` in `config.json` (and on macOS or Linux) it runs headless instead and prints its steps in the server window.
 
 ## When the chat misbehaves
 
