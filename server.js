@@ -9,7 +9,7 @@ const readline = require('readline');
 const { execFileSync } = require('child_process');
 const { createTools } = require('./lib/tools');
 const { createChat } = require('./lib/chat');
-const { runClaude } = require('./lib/claude');
+const { runClaude, openClaudeWindow } = require('./lib/claude');
 const { REQUEST_MARKER, render, findBlocks, fillContents, formatResults, splitText } = require('./lib/protocol');
 
 const USAGE = 'usage: node server.js [--chat <link> | --new] [--model <name>] [--workspace <dir>] [--manual] [--config <file>]';
@@ -55,8 +55,8 @@ function claudeVersion(cmd) {
   }
 }
 
-// One entry per chat, by the key given in its setup text: the blocks that already ran. Kept on
-// disk so a restarted server never reruns a block.
+// One entry per chat, by the key given in its setup text: its workspace and the blocks that
+// already ran. Kept on disk so a restarted server never reruns a block.
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return { chats: {} }; }
 }
@@ -65,9 +65,26 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const cfg = JSON.parse(fs.readFileSync(opts.config, 'utf8'));
   const tools = createTools(path.resolve(opts.workspace), { deny: cfg.deny, exclude: [__dirname], run: cfg.run });
-  const chat = createChat(cfg);
+  // The workspace name is on every window of this server: this one, the chat page and the Claude
+  // Code window. With several servers running, it shows which windows belong together.
+  const name = path.basename(tools.root);
+  process.title = `AllAiHarness - ${name}`;
+  const chat = createChat(cfg, `AllAiHarness: ${name}`);
   const state = loadState();
-  const saveState = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state));
+  // The chats this server changed. Only they are saved, on top of what is on disk, so a second
+  // server started from this folder keeps its own.
+  const own = new Set();
+  const saveState = () => {
+    const disk = loadState();
+    for (const key of own) disk.chats[key] = state.chats[key];
+    fs.writeFileSync(STATE_FILE, JSON.stringify(disk));
+  };
+  // A chat belongs to the workspace it was set up for. In a copy of this folder put into another
+  // project, the chats of the first project are not this server's: their blocks never run here.
+  const sameDir = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+  const mine = (key) => !!state.chats[key] && sameDir(state.chats[key].workspace, tools.root);
+  // Chats from before this was recorded count as this workspace's.
+  for (const [key, c] of Object.entries(state.chats)) if (!c.workspace) { c.workspace = tools.root; own.add(key); }
   const log = (title, body) => fs.appendFileSync(LOG_FILE, `## ${new Date().toISOString()} ${title}\n\n${body}\n\n`);
 
   // The message last sent, until the brain starts answering it. A rate-limit notice or an answer
@@ -152,7 +169,8 @@ async function main() {
 
   async function sendSetup() {
     const key = crypto.randomBytes(3).toString('hex');
-    state.chats[key] = { seen: [] };
+    state.chats[key] = { workspace: tools.root, seen: [] };
+    own.add(key);
     saveState();
     await deliver(render('bootstrap.md', {
       key,
@@ -165,11 +183,11 @@ async function main() {
     say(opts.manual ? 'setup text is in the message box; add your request and press Enter' : 'chat set up; talk to the brain in the browser');
   }
 
-  // An old chat that this copy of the harness set up goes on as it is. Any other chat gets the
+  // An old chat that was set up for this workspace goes on as it is. Any other chat gets the
   // setup message first, so the brain knows the format and this workspace.
   async function resumeChat() {
     await sleep(3000); // let the page draw the old messages
-    const known = findBlocks(await chat.replies()).some((b) => state.chats[b.key]);
+    const known = findBlocks(await chat.replies()).some((b) => mine(b.key));
     if (known) say('old chat is already set up; talk to the brain in the browser');
     else await sendSetup();
   }
@@ -182,11 +200,12 @@ async function main() {
         case 'search': return { ok: true, text: tools.search(action) };
         case 'write': return { ok: true, text: tools.write(action) };
         case 'edit': return { ok: true, text: tools.edit(action) };
-        case 'run': return await tools.run(action);
+        // The output shows here line by line while the command runs, not only at its end.
+        case 'run': return await tools.run(action, (piece) => process.stdout.write(`\x1b[90m${piece.replace(/^(?=.)/gm, '    | ')}\x1b[0m`));
         case 'claude': {
           if (!claude) throw new Error('Claude Code is not installed on this machine; do the work with write, edit and run');
           if (typeof action.task !== 'string' || !action.task.trim()) throw new Error('"task" is missing');
-          await chat.banner(`Claude Code (${workerModel}) is opening in its own window...`, '#1d4ed8');
+          await chat.banner(`Claude Code (${workerModel}) is starting in its window...`, '#1d4ed8');
           let lastSaid = 0;
           const r = await runClaude(action.task, {
             workspace: tools.root,
@@ -219,6 +238,7 @@ async function main() {
   async function runBlock(block) {
     // Marked before it runs: a crash loses one block, it never runs one twice.
     state.chats[block.key].seen.push(block.hash);
+    own.add(block.key);
     saveState();
 
     const actions = block.actions.slice(0, cfg.maxActionsPerBlock).map((a, i) => ({ ...a, id: `a${i + 1}` }));
@@ -232,10 +252,15 @@ async function main() {
         console.log(`  ${action.id} ${action.tool} ${label} ... skipped`);
         continue;
       }
-      process.stdout.write(`  ${action.id} ${action.tool} ${label} ... `);
+      // A command is shown in full, with its output under it as it comes.
+      const live = action.tool === 'run' || action.tool === 'claude';
+      const began = Date.now();
+      if (live) console.log(`  ${action.id} ${action.tool} ${action.tool === 'run' ? String(action.cmd || '') : label}`);
+      else process.stdout.write(`  ${action.id} ${action.tool} ${label} ... `);
       let result;
       try { result = await runAction(fillContents(action, block.contents)); } catch (e) { result = { ok: false, text: e.message }; }
-      console.log(result.ok ? 'ok' : `error: ${result.text.split('\n')[0].slice(0, 120)}`);
+      const outcome = result.ok ? 'ok' : `error: ${result.text.split('\n')[0].slice(0, 120)}`;
+      console.log(live ? `\n  ${action.id} ${outcome} (${Math.round((Date.now() - began) / 1000)}s)` : outcome);
       results.push({ action, status: result.ok ? 'ok' : 'error', text: result.text });
       failed = !result.ok;
     }
@@ -260,7 +285,7 @@ async function main() {
 
     // Only blocks that carry a key this server issued and that have not run yet.
     const next = findBlocks(await chat.replies())
-      .find((b) => state.chats[b.key] && !state.chats[b.key].seen.includes(b.hash));
+      .find((b) => mine(b.key) && !state.chats[b.key].seen.includes(b.hash));
     if (!next) { pending = { digest: null, polls: 0 }; return; }
     // Run it once the reply has stopped changing. An agent block that closes the reply means
     // everything before it is complete; otherwise content may still be streaming, so wait longer.
@@ -272,12 +297,11 @@ async function main() {
 
   process.on('SIGINT', () => { chat.stop(); process.exit(0); });
 
-  // Claude Code needs no setup here: the server starts it by itself, in the workspace, each
-  // time the brain uses the claude action.
+  // Claude Code needs no setup here: the server starts it by itself, in the workspace.
   const claude = claudeVersion(cfg.claude.cmd);
   console.log(`workspace: ${tools.root}`);
   console.log(`mode: ${opts.manual ? 'manual (messages wait in the message box)' : 'auto (messages are sent for you)'}`);
-  console.log(`Claude Code: ${claude ? `found (${claude}); the server starts it when the brain asks for it` : 'not found; the brain works without it'}`);
+  console.log(`Claude Code: ${claude ? `found (${claude})` : 'not found; the brain works without it'}`);
 
   // The model Claude Code works with: haiku, sonnet, opus or a full model name.
   const modelAt = cfg.claude.args.indexOf('--model');
@@ -289,6 +313,10 @@ async function main() {
   }
   workerModel = cfg.claude.args[cfg.claude.args.indexOf('--model') + 1] || 'default';
   if (claude) console.log(`Claude Code model: ${workerModel}`);
+  if (claude && openClaudeWindow({ workspace: tools.root, cfg: cfg.claude })) {
+    console.log(`Claude Code window: "Claude Code - ${name}". Jobs the brain hands to Claude Code run there.`);
+    console.log('  Commands the brain runs itself show in this window, with their output as it comes.');
+  }
 
   let link = opts.chat === null ? await ask('Continue an old chat? Paste its link and press Enter. For a new chat just press Enter: ') : opts.chat;
   if (link && !(link.startsWith(cfg.url) && link.length > cfg.url.length)) {
