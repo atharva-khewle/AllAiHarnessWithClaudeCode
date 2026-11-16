@@ -195,9 +195,10 @@ async function main() {
             title: action.task.replace(/\s+/g, ' ').slice(0, 60),
             // Shown on the chat page and, once a minute, in this window, so a long job never
             // looks like a hang.
-            onStatus: ({ step, steps, secs }) => {
+            onStep: (step) => console.log(`    claude> ${step.slice(0, 150)}`),
+            onStatus: ({ step, steps, secs, waiting }) => {
               const time = `${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, '0')}s`;
-              chat.banner(`Claude Code (${workerModel}) running ${time}${steps ? `, ${steps} steps` : ''}: ${step}`, '#1d4ed8');
+              chat.banner(`Claude Code (${workerModel}) running ${time}${steps ? `, ${steps} steps` : ''}: ${step}`, waiting ? '#b45309' : '#1d4ed8');
               if (secs - lastSaid >= 60) { lastSaid = secs; say(`Claude Code still running (${time}${steps ? `, ${steps} steps` : ''}: ${step.slice(0, 80)})`); }
             },
           });
