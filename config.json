@@ -1,0 +1,37 @@
+{
+  "url": "https://chat.deepseek.com/",
+  "chromePath": "",
+  "debugPort": 9333,
+  "profileDir": "",
+  "selectors": { "input": "textarea", "send": "", "reply": ".ds-markdown" },
+  "pollMs": 1000,
+  "maxActionsPerBlock": 8,
+  "maxResultChars": 12000,
+  "maxMessageChars": 40000,
+  "run": {
+    "timeoutSec": 120,
+    "maxTimeoutSec": 600,
+    "block": [
+      "\\b(format|shutdown|reboot|mkfs|diskpart)\\b",
+      "\\breg(\\.exe)?\\s+(add|delete|import)\\b",
+      "\\bgit\\s+push\\b",
+      "(\\brm\\s+-\\w*r|\\b(rmdir|rd)\\s+/s|\\bdel\\s+/s|remove-item\\b.*-recurse).*(\\s|\"|')([a-z]:[\\\\/]|[\\\\/]|~|\\.\\.|%\\w+%|\\$)",
+      "\\b(curl|wget|iwr|irm)\\b.*\\|\\s*(sh|bash|iex|powershell|pwsh)\\b",
+      "\\.env\\b"
+    ]
+  },
+  "claude": {
+    "cmd": "claude",
+    "args": [
+      "--model", "haiku",
+      "--permission-mode", "auto",
+      "--tools", "Bash,Edit,Read,Write,Glob,Grep",
+      "--strict-mcp-config",
+      "--disable-slash-commands",
+      "--setting-sources", "project",
+      "--no-session-persistence"
+    ],
+    "timeoutSec": 900
+  },
+  "deny": []
+}
